@@ -2358,6 +2358,13 @@ async def completion(
         if user_api_base:
             data["api_base"] = user_api_base
 
+        ## ADD USERID AS REQUIREMENT
+        if data["user_id"] is None:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail={"error": "No user_id passed"},
+            )
+        
         ### CALL HOOKS ### - modify incoming data before calling the model
         data = await proxy_logging_obj.pre_call_hook(
             user_api_key_dict=user_api_key_dict, data=data, call_type="completion"
@@ -2549,6 +2556,13 @@ async def chat_completion(
         if user_api_base:
             data["api_base"] = user_api_base
 
+        ## ADD USERID AS REQUIREMENT
+        if data["user_id"] is None:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail={"error": "No user_id passed"},
+            )
+        
         ### CALL HOOKS ### - modify incoming data before calling the model
         data = await proxy_logging_obj.pre_call_hook(
             user_api_key_dict=user_api_key_dict, data=data, call_type="completion"
