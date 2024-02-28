@@ -109,6 +109,9 @@ def test_vertex_ai():
                 "code-gecko@latest",
                 "code-bison@001",
                 "text-bison@001",
+                "gemini-1.5-pro",
+                "gemini-1.5-pro-preview-0215",
+                "gemini-1.5-pro-vision",
             ]:
                 # our account does not have access to this model
                 continue
@@ -127,6 +130,8 @@ def test_vertex_ai():
                 f"response.choices[0].finish_reason: {response.choices[0].finish_reason}"
             )
             assert response.choices[0].finish_reason in litellm._openai_finish_reasons
+        except litellm.RateLimitError as e:
+            pass
         except Exception as e:
             pytest.fail(f"Error occurred: {e}")
 
@@ -136,7 +141,7 @@ def test_vertex_ai():
 
 def test_vertex_ai_stream():
     load_vertex_ai_credentials()
-    litellm.set_verbose = False
+    litellm.set_verbose = True
     litellm.vertex_project = "reliablekeys"
     import random
 
@@ -157,6 +162,9 @@ def test_vertex_ai_stream():
                 "code-gecko@latest",
                 "code-bison@001",
                 "text-bison@001",
+                "gemini-1.5-pro",
+                "gemini-1.5-pro-preview-0215",
+                "gemini-1.5-pro-vision",
             ]:
                 # our account does not have access to this model
                 continue
@@ -177,6 +185,8 @@ def test_vertex_ai_stream():
                 assert type(content) == str
                 # pass
             assert len(completed_str) > 4
+        except litellm.RateLimitError as e:
+            pass
         except Exception as e:
             pytest.fail(f"Error occurred: {e}")
 
@@ -206,6 +216,9 @@ async def test_async_vertexai_response():
             "code-gecko@latest",
             "code-bison@001",
             "text-bison@001",
+            "gemini-1.5-pro",
+            "gemini-1.5-pro-preview-0215",
+            "gemini-1.5-pro-vision",
         ]:
             # our account does not have access to this model
             continue
@@ -216,6 +229,8 @@ async def test_async_vertexai_response():
                 model=model, messages=messages, temperature=0.7, timeout=5
             )
             print(f"response: {response}")
+        except litellm.RateLimitError as e:
+            pass
         except litellm.Timeout as e:
             pass
         except Exception as e:
@@ -246,6 +261,9 @@ async def test_async_vertexai_streaming_response():
             "code-gecko@latest",
             "code-bison@001",
             "text-bison@001",
+            "gemini-1.5-pro",
+            "gemini-1.5-pro-preview-0215",
+            "gemini-1.5-pro-vision",
         ]:
             # our account does not have access to this model
             continue

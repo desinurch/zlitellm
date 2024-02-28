@@ -5,6 +5,7 @@ from litellm.proxy._types import (
     UserAPIKeyAuth,
     DynamoDBArgs,
     LiteLLM_VerificationToken,
+    LiteLLM_VerificationTokenView,
     LiteLLM_SpendLogs,
 )
 from litellm.caching import DualCache
@@ -486,6 +487,46 @@ class PrismaClient:
         max_time=10,  # maximum total time to retry for
         on_backoff=on_backoff,  # specifying the function to call on backoff
     )
+    async def check_view_exists(self):
+        """
+        Checks if the LiteLLM_VerificationTokenView exists in the user's db.
+
+        This is used for getting the token + team data in user_api_key_auth
+
+        If the view doesn't exist, one will be created.
+        """
+        try:
+            # Try to select one row from the view
+            await self.db.execute_raw(
+                """SELECT 1 FROM "LiteLLM_VerificationTokenView" LIMIT 1"""
+            )
+            return "LiteLLM_VerificationTokenView Exists!"
+        except Exception as e:
+            # If an error occurs, the view does not exist, so create it
+            value = await self.health_check()
+            await self.db.execute_raw(
+                """
+                    CREATE VIEW "LiteLLM_VerificationTokenView" AS
+                    SELECT 
+                    v.*, 
+                    t.spend AS team_spend, 
+                    t.max_budget AS team_max_budget, 
+                    t.tpm_limit AS team_tpm_limit, 
+                    t.rpm_limit AS team_rpm_limit
+                    FROM "LiteLLM_VerificationToken" v
+                    LEFT JOIN "LiteLLM_TeamTable" t ON v.team_id = t.team_id;
+                """
+            )
+
+        return "LiteLLM_VerificationTokenView Created!"
+
+    @backoff.on_exception(
+        backoff.expo,
+        Exception,  # base exception to catch for the backoff
+        max_tries=3,  # maximum number of retries
+        max_time=10,  # maximum total time to retry for
+        on_backoff=on_backoff,  # specifying the function to call on backoff
+    )
     async def get_generic_data(
         self,
         key: str,
@@ -535,7 +576,15 @@ class PrismaClient:
         team_id_list: Optional[list] = None,
         key_val: Optional[dict] = None,
         table_name: Optional[
-            Literal["user", "key", "config", "spend", "team", "user_notification"]
+            Literal[
+                "user",
+                "key",
+                "config",
+                "spend",
+                "team",
+                "user_notification",
+                "combined_view",
+            ]
         ] = None,
         query_type: Literal["find_unique", "find_all"] = "find_unique",
         expires: Optional[datetime] = None,
@@ -543,7 +592,9 @@ class PrismaClient:
     ):
         try:
             response: Any = None
-            if token is not None or (table_name is not None and table_name == "key"):
+            if (token is not None and table_name is None) or (
+                table_name is not None and table_name == "key"
+            ):
                 # check if plain text or hash
                 if token is not None:
                     if isinstance(token, str):
@@ -554,6 +605,11 @@ class PrismaClient:
                             f"PrismaClient: find_unique for token: {hashed_token}"
                         )
                 if query_type == "find_unique":
+                    if token is None:
+                        raise HTTPException(
+                            status_code=400,
+                            detail={"error": f"No token passed in. Token={token}"},
+                        )
                     response = await self.db.litellm_verificationtoken.find_unique(
                         where={"token": hashed_token}
                     )
@@ -630,11 +686,15 @@ class PrismaClient:
                 table_name is not None and table_name == "user"
             ):
                 if query_type == "find_unique":
+                    if key_val is None:
+                        key_val = {"user_id": user_id}
                     response = await self.db.litellm_usertable.find_unique(  # type: ignore
-                        where={
-                            "user_id": user_id,  # type: ignore
-                        }
+                        where=key_val  # type: ignore
                     )
+                elif query_type == "find_all" and key_val is not None:
+                    response = await self.db.litellm_usertable.find_many(
+                        where=key_val  # type: ignore
+                    )  # type: ignore
                 elif query_type == "find_all" and reset_at is not None:
                     response = await self.db.litellm_usertable.find_many(
                         where={  # type:ignore
@@ -714,6 +774,38 @@ class PrismaClient:
                 elif query_type == "find_all":
                     response = await self.db.litellm_usernotifications.find_many()  # type: ignore
                 return response
+            elif table_name == "combined_view":
+                # check if plain text or hash
+                if token is not None:
+                    if isinstance(token, str):
+                        hashed_token = token
+                        if token.startswith("sk-"):
+                            hashed_token = self.hash_token(token=token)
+                        verbose_proxy_logger.debug(
+                            f"PrismaClient: find_unique for token: {hashed_token}"
+                        )
+                if query_type == "find_unique":
+                    if token is None:
+                        raise HTTPException(
+                            status_code=400,
+                            detail={"error": f"No token passed in. Token={token}"},
+                        )
+
+                    sql_query = f"""
+                    SELECT *
+                    FROM "LiteLLM_VerificationTokenView"
+                    WHERE token = '{token}'
+                    """
+
+                    response = await self.db.query_first(query=sql_query)
+                    if response is not None:
+                        response = LiteLLM_VerificationTokenView(**response)
+                        # for prisma we need to cast the expires time to str
+                        if response.expires is not None and isinstance(
+                            response.expires, datetime
+                        ):
+                            response.expires = response.expires.isoformat()
+                    return response
         except Exception as e:
             print_verbose(f"LiteLLM Prisma Client Exception: {e}")
             import traceback
@@ -864,12 +956,15 @@ class PrismaClient:
         query_type: Literal["update", "update_many"] = "update",
         table_name: Optional[Literal["user", "key", "config", "spend", "team"]] = None,
         update_key_values: Optional[dict] = None,
+        update_key_values_custom_query: Optional[dict] = None,
     ):
         """
         Update existing data
         """
         try:
             db_data = self.jsonify_object(data=data)
+            if update_key_values is not None:
+                update_key_values = self.jsonify_object(data=update_key_values)
             if token is not None:
                 print_verbose(f"token: {token}")
                 # check if plain text or hash
@@ -897,7 +992,10 @@ class PrismaClient:
                 if user_id is None:
                     user_id = db_data["user_id"]
                 if update_key_values is None:
-                    update_key_values = db_data
+                    if update_key_values_custom_query is not None:
+                        update_key_values = update_key_values_custom_query
+                    else:
+                        update_key_values = db_data
                 update_user_row = await self.db.litellm_usertable.upsert(
                     where={"user_id": user_id},  # type: ignore
                     data={
@@ -939,7 +1037,6 @@ class PrismaClient:
                     update_key_values["members_with_roles"] = json.dumps(
                         update_key_values["members_with_roles"]
                     )
-
                 update_team_row = await self.db.litellm_teamtable.upsert(
                     where={"team_id": team_id},  # type: ignore
                     data={
@@ -1355,6 +1452,7 @@ def get_logging_payload(kwargs, response_obj, start_time, end_time):
         "user": kwargs.get("user", ""),
         "metadata": metadata,
         "cache_key": cache_key,
+        "spend": kwargs.get("response_cost", 0),
         "total_tokens": usage.get("total_tokens", 0),
         "prompt_tokens": usage.get("prompt_tokens", 0),
         "completion_tokens": usage.get("completion_tokens", 0),

@@ -1,13 +1,11 @@
 "use client";
 import React, { useState, useEffect } from "react";
-import { userInfoCall, modelInfoCall } from "./networking";
+import { userInfoCall, modelAvailableCall } from "./networking";
 import { Grid, Col, Card, Text } from "@tremor/react";
 import CreateKey from "./create_key_button";
 import ViewKeyTable from "./view_key_table";
 import ViewUserSpend from "./view_user_spend";
-import EnterProxyUrl from "./enter_proxy_url";
-import { message } from "antd";
-import Navbar from "./navbar";
+import DashboardTeam from "./dashboard_default_team";
 import { useSearchParams, useRouter } from "next/navigation";
 import { jwtDecode } from "jwt-decode";
 
@@ -24,16 +22,20 @@ interface UserDashboardProps {
   userID: string | null;
   userRole: string | null;
   userEmail: string | null;
+  teams: any[] | null;
   setUserRole: React.Dispatch<React.SetStateAction<string>>;
   setUserEmail: React.Dispatch<React.SetStateAction<string | null>>;
+  setTeams: React.Dispatch<React.SetStateAction<Object[] | null>>;
 }
 
 const UserDashboard: React.FC<UserDashboardProps> = ({
   userID,
   userRole,
+  teams,
   setUserRole,
   userEmail,
   setUserEmail,
+  setTeams,
 }) => {
   const [data, setData] = useState<null | any[]>(null); // Keep the initialization of state here
   const [userSpendData, setUserSpendData] = useState<UserSpendData | null>(
@@ -48,10 +50,12 @@ const UserDashboard: React.FC<UserDashboardProps> = ({
   const token = searchParams.get("token");
   const [accessToken, setAccessToken] = useState<string | null>(null);
   const [userModels, setUserModels] = useState<string[]>([]);
-
+  const [selectedTeam, setSelectedTeam] = useState<any | null>(
+    teams ? teams[0] : null
+  );
   // check if window is not undefined
   if (typeof window !== "undefined") {
-    window.addEventListener('beforeunload', function() {
+    window.addEventListener("beforeunload", function () {
       // Clear session storage
       sessionStorage.clear();
     });
@@ -76,9 +80,9 @@ const UserDashboard: React.FC<UserDashboardProps> = ({
     }
   }
 
+  // console.log(`selectedTeam: ${Object.entries(selectedTeam)}`);
   // Moved useEffect inside the component and used a condition to run fetch only if the params are available
   useEffect(() => {
-
     if (token) {
       const decoded = jwtDecode(token) as { [key: string]: any };
       if (decoded) {
@@ -109,32 +113,46 @@ const UserDashboard: React.FC<UserDashboardProps> = ({
       const cachedUserModels = sessionStorage.getItem("userModels" + userID);
       if (cachedUserModels) {
         setUserModels(JSON.parse(cachedUserModels));
-  
       } else {
         const fetchData = async () => {
           try {
             const response = await userInfoCall(accessToken, userID, userRole);
+            console.log(
+              `received teams in user dashboard: ${Object.keys(
+                response
+              )}; team values: ${Object.entries(response.teams)}`
+            );
             setUserSpendData(response["user_info"]);
             setData(response["keys"]); // Assuming this is the correct path to your data
-            sessionStorage.setItem("userData" + userID, JSON.stringify(response["keys"]));
+            setTeams(response["teams"]);
+            setSelectedTeam(response["teams"] ? response["teams"][0] : null);
+            sessionStorage.setItem(
+              "userData" + userID,
+              JSON.stringify(response["keys"])
+            );
             sessionStorage.setItem(
               "userSpendData" + userID,
               JSON.stringify(response["user_info"])
             );
 
-            const model_info = await modelInfoCall(accessToken, userID, userRole);
-            console.log("model_info:", model_info);
+            const model_available = await modelAvailableCall(
+              accessToken,
+              userID,
+              userRole
+            );
             // loop through model_info["data"] and create an array of element.model_name
-            let available_model_names = model_info["data"].filter((element: { model_name: string; user_access: boolean }) => element.user_access === true).map((element: { model_name: string; }) => element.model_name);
+            let available_model_names = model_available["data"].map(
+              (element: { id: string }) => element.id
+            );
             console.log("available_model_names:", available_model_names);
             setUserModels(available_model_names);
 
             console.log("userModels:", userModels);
 
-            sessionStorage.setItem("userModels" + userID, JSON.stringify(available_model_names));
-
-
-            
+            sessionStorage.setItem(
+              "userModels" + userID,
+              JSON.stringify(available_model_names)
+            );
           } catch (error) {
             console.error("There was an error fetching the data", error);
             // Optionally, update your UI to reflect the error state here as well
@@ -180,12 +198,14 @@ const UserDashboard: React.FC<UserDashboardProps> = ({
           />
           <CreateKey
             userID={userID}
+            teamID={selectedTeam ? selectedTeam["team_id"] : null}
             userRole={userRole}
             userModels={userModels}
             accessToken={accessToken}
             data={data}
             setData={setData}
           />
+          <DashboardTeam teams={teams} setSelectedTeam={setSelectedTeam} />
         </Col>
       </Grid>
     </div>

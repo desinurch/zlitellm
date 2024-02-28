@@ -55,6 +55,7 @@ encoding = tiktoken.get_encoding("cl100k_base")
 import importlib.metadata
 from ._logging import verbose_logger
 from .integrations.traceloop import TraceloopLogger
+from .integrations.athina import AthinaLogger
 from .integrations.helicone import HeliconeLogger
 from .integrations.aispend import AISpendLogger
 from .integrations.berrispend import BerriSpendLogger
@@ -67,6 +68,7 @@ from .integrations.custom_logger import CustomLogger
 from .integrations.langfuse import LangFuseLogger
 from .integrations.dynamodb import DyanmoDBLogger
 from .integrations.s3 import S3Logger
+from .integrations.clickhouse import ClickhouseLogger
 from .integrations.litedebugger import LiteDebugger
 from .proxy._types import KeyManagementSystem
 from openai import OpenAIError as OriginalError
@@ -114,6 +116,7 @@ posthog = None
 slack_app = None
 alerts_channel = None
 heliconeLogger = None
+athinaLogger = None
 promptLayerLogger = None
 langsmithLogger = None
 weightsBiasesLogger = None
@@ -122,6 +125,7 @@ langFuseLogger = None
 dynamoLogger = None
 s3Logger = None
 genericAPILogger = None
+clickHouseLogger = None
 llmonitorLogger = None
 aispendLogger = None
 berrispendLogger = None
@@ -201,12 +205,19 @@ def map_finish_reason(
 
 class FunctionCall(OpenAIObject):
     arguments: str
-    name: str
+    name: Optional[str] = None
 
 
 class Function(OpenAIObject):
     arguments: str
-    name: str
+    name: Optional[str] = None
+
+
+class ChatCompletionDeltaToolCall(OpenAIObject):
+    id: Optional[str] = None
+    function: Function
+    type: Optional[str] = None
+    index: int
 
 
 class ChatCompletionMessageToolCall(OpenAIObject):
@@ -264,8 +275,21 @@ class Delta(OpenAIObject):
         super(Delta, self).__init__(**params)
         self.content = content
         self.role = role
-        self.function_call = function_call
-        self.tool_calls = tool_calls
+        if function_call is not None and isinstance(function_call, dict):
+            self.function_call = FunctionCall(**function_call)
+        else:
+            self.function_call = function_call
+        if tool_calls is not None and isinstance(tool_calls, list):
+            self.tool_calls = []
+            for tool_call in tool_calls:
+                if isinstance(tool_call, dict):
+                    if tool_call.get("index", None) is None:
+                        tool_call["index"] = 0
+                    self.tool_calls.append(ChatCompletionDeltaToolCall(**tool_call))
+                elif isinstance(tool_call, ChatCompletionDeltaToolCall):
+                    self.tool_calls.append(tool_call)
+        else:
+            self.tool_calls = tool_calls
 
     def __contains__(self, key):
         # Define custom behavior for the 'in' operator
@@ -374,11 +398,9 @@ class StreamingChoices(OpenAIObject):
             self.delta = delta
         else:
             self.delta = Delta()
-
-        if logprobs is not None:
-            self.logprobs = logprobs
         if enhancements is not None:
             self.enhancements = enhancements
+        self.logprobs = logprobs
 
     def __contains__(self, key):
         # Define custom behavior for the 'in' operator
@@ -818,6 +840,8 @@ class Logging:
         ## DYNAMIC LANGFUSE KEYS ##
         self.langfuse_public_key = langfuse_public_key
         self.langfuse_secret = langfuse_secret
+        ## TIME TO FIRST TOKEN LOGGING ##
+        self.completion_start_time: Optional[datetime.datetime] = None
 
     def update_environment_variables(
         self, model, user, optional_params, litellm_params, **additional_params
@@ -838,6 +862,7 @@ class Logging:
             "user": user,
             "call_type": str(self.call_type),
             "litellm_call_id": self.litellm_call_id,
+            "completion_start_time": self.completion_start_time,
             **self.optional_params,
             **additional_params,
         }
@@ -1067,6 +1092,11 @@ class Logging:
                 start_time = self.start_time
             if end_time is None:
                 end_time = datetime.datetime.now()
+            if self.completion_start_time is None:
+                self.completion_start_time = end_time
+                self.model_call_details["completion_start_time"] = (
+                    self.completion_start_time
+                )
             self.model_call_details["log_event_type"] = "successful_api_call"
             self.model_call_details["end_time"] = end_time
             self.model_call_details["cache_hit"] = cache_hit
@@ -1159,7 +1189,7 @@ class Logging:
             verbose_logger.debug(f"success callbacks: {litellm.success_callback}")
             ## BUILD COMPLETE STREAMED RESPONSE
             complete_streaming_response = None
-            if self.stream:
+            if self.stream and isinstance(result, ModelResponse):
                 if (
                     result.choices[0].finish_reason is not None
                 ):  # if it's the last chunk
@@ -1172,7 +1202,8 @@ class Logging:
                             start_time=start_time,
                             end_time=end_time,
                         )
-                    except:
+                    except Exception as e:
+
                         complete_streaming_response = None
                 else:
                     self.sync_streaming_chunks.append(result)
@@ -1356,7 +1387,7 @@ class Logging:
                                 f"is complete_streaming_response in kwargs: {kwargs.get('complete_streaming_response', None)}"
                             )
                             if complete_streaming_response is None:
-                                break
+                                continue
                             else:
                                 print_verbose("reaches langfuse for streaming logging!")
                                 result = kwargs["complete_streaming_response"]
@@ -1405,6 +1436,37 @@ class Logging:
                             user_id=kwargs.get("user", None),
                             print_verbose=print_verbose,
                         )
+                    if callback == "clickhouse":
+                        global clickHouseLogger
+                        verbose_logger.debug("reaches clickhouse for success logging!")
+                        kwargs = {}
+                        for k, v in self.model_call_details.items():
+                            if (
+                                k != "original_response"
+                            ):  # copy.deepcopy raises errors as this could be a coroutine
+                                kwargs[k] = v
+                        # this only logs streaming once, complete_streaming_response exists i.e when stream ends
+                        if self.stream:
+                            verbose_logger.debug(
+                                f"is complete_streaming_response in kwargs: {kwargs.get('complete_streaming_response', None)}"
+                            )
+                            if complete_streaming_response is None:
+                                break
+                            else:
+                                print_verbose(
+                                    "reaches clickhouse for streaming logging!"
+                                )
+                                result = kwargs["complete_streaming_response"]
+                        if clickHouseLogger is None:
+                            clickHouseLogger = ClickhouseLogger()
+                        clickHouseLogger.log_event(
+                            kwargs=kwargs,
+                            response_obj=result,
+                            start_time=start_time,
+                            end_time=end_time,
+                            user_id=kwargs.get("user", None),
+                            print_verbose=print_verbose,
+                        )
                     if callback == "cache" and litellm.cache is not None:
                         # this only logs streaming once, complete_streaming_response exists i.e when stream ends
                         print_verbose("success_callback: reaches cache for logging!")
@@ -1422,6 +1484,17 @@ class Logging:
                                 result = kwargs["complete_streaming_response"]
                                 # only add to cache once we have a complete streaming response
                                 litellm.cache.add_cache(result, **kwargs)
+                    if callback == "athina":
+                        deep_copy = {}
+                        for k, v in self.model_call_details.items():
+                            deep_copy[k] = v
+                        athinaLogger.log_event(
+                            kwargs=deep_copy,
+                            response_obj=result,
+                            start_time=start_time,
+                            end_time=end_time,
+                            print_verbose=print_verbose,
+                        )
                     if callback == "traceloop":
                         deep_copy = {}
                         for k, v in self.model_call_details.items():
@@ -3907,6 +3980,7 @@ def get_optional_params(
     max_retries=None,
     logprobs=None,
     top_logprobs=None,
+    extra_headers=None,
     **kwargs,
 ):
     # retrieve all parameters passed to the function
@@ -3946,6 +4020,7 @@ def get_optional_params(
         "max_retries": None,
         "logprobs": None,
         "top_logprobs": None,
+        "extra_headers": None,
     }
     # filter out those parameters that were passed with non-default values
     non_default_params = {
@@ -4216,9 +4291,7 @@ def get_optional_params(
         if max_tokens is not None:
             optional_params["max_tokens"] = max_tokens
         if frequency_penalty is not None:
-            optional_params["repetition_penalty"] = (
-                frequency_penalty  # https://docs.together.ai/reference/inference
-            )
+            optional_params["frequency_penalty"] = frequency_penalty
         if stop is not None:
             optional_params["stop"] = stop
         if tools is not None:
@@ -4284,7 +4357,9 @@ def get_optional_params(
         or model in litellm.vertex_code_text_models
         or model in litellm.vertex_language_models
         or model in litellm.vertex_embedding_models
+        or model in litellm.vertex_vision_models
     ):
+        print_verbose(f"(start) INSIDE THE VERTEX AI OPTIONAL PARAM BLOCK")
         ## check if unsupported param passed in
         supported_params = [
             "temperature",
@@ -4318,6 +4393,9 @@ def get_optional_params(
             optional_params["tools"] = [
                 generative_models.Tool(function_declarations=gtool_func_declarations)
             ]
+        print_verbose(
+            f"(end) INSIDE THE VERTEX AI OPTIONAL PARAM BLOCK - optional_params: {optional_params}"
+        )
     elif custom_llm_provider == "sagemaker":
         ## check if unsupported param passed in
         supported_params = ["stream", "temperature", "max_tokens", "top_p", "stop", "n"]
@@ -4733,6 +4811,7 @@ def get_optional_params(
             extra_body  # openai client supports `extra_body` param
         )
     else:  # assume passing in params for openai/azure openai
+        print_verbose(f"UNMAPPED PROVIDER, ASSUMING IT'S OPENAI/AZUREs")
         supported_params = [
             "functions",
             "function_call",
@@ -4753,6 +4832,7 @@ def get_optional_params(
             "max_retries",
             "logprobs",
             "top_logprobs",
+            "extra_headers",
         ]
         _check_valid_arg(supported_params=supported_params)
         if functions is not None:
@@ -4793,6 +4873,8 @@ def get_optional_params(
             optional_params["logprobs"] = logprobs
         if top_logprobs is not None:
             optional_params["top_logprobs"] = top_logprobs
+        if extra_headers is not None:
+            optional_params["extra_headers"] = extra_headers
     if custom_llm_provider in ["openai", "azure"] + litellm.openai_compatible_providers:
         # for openai, azure we should pass the extra/passed params within `extra_body` https://github.com/openai/openai-python/blob/ac33853ba10d13ac149b1fa3ca6dba7d613065c9/src/openai/resources/models.py#L46
         extra_body = passed_params.pop("extra_body", {})
@@ -4805,6 +4887,7 @@ def get_optional_params(
         for k in passed_params.keys():
             if k not in default_params.keys():
                 optional_params[k] = passed_params[k]
+    print_verbose(f"Final returned optional params: {optional_params}")
     return optional_params
 
 
@@ -4844,9 +4927,13 @@ def get_llm_provider(
                 # deepinfra is openai compatible, we just need to set this to custom_openai and have the api_base be https://api.endpoints.anyscale.com/v1
                 api_base = "https://api.deepinfra.com/v1/openai"
                 dynamic_api_key = get_secret("DEEPINFRA_API_KEY")
+            elif custom_llm_provider == "groq":
+                # groq is openai compatible, we just need to set this to custom_openai and have the api_base be https://api.groq.com/openai/v1
+                api_base = "https://api.groq.com/openai/v1"
+                dynamic_api_key = get_secret("GROQ_API_KEY")
             elif custom_llm_provider == "mistral":
                 # mistral is openai compatible, we just need to set this to custom_openai and have the api_base be https://api.mistral.ai
-                api_base = "https://api.mistral.ai/v1"
+                api_base = api_base or "https://api.mistral.ai/v1"
                 dynamic_api_key = get_secret("MISTRAL_API_KEY")
             elif custom_llm_provider == "voyage":
                 # voyage is openai compatible, we just need to set this to custom_openai and have the api_base be https://api.voyageai.com/v1
@@ -4881,6 +4968,9 @@ def get_llm_provider(
                     elif endpoint == "api.mistral.ai/v1":
                         custom_llm_provider = "mistral"
                         dynamic_api_key = get_secret("MISTRAL_API_KEY")
+                    elif endpoint == "api.groq.com/openai/v1":
+                        custom_llm_provider = "groq"
+                        dynamic_api_key = get_secret("GROQ_API_KEY")
                     return model, custom_llm_provider, dynamic_api_key, api_base
 
         # check if model in known model provider list  -> for huggingface models, raise exception as they don't have a fixed provider (can be togetherai, anyscale, baseten, runpod, et.)
@@ -5509,7 +5599,7 @@ def validate_environment(model: Optional[str] = None) -> dict:
 
 
 def set_callbacks(callback_list, function_id=None):
-    global sentry_sdk_instance, capture_exception, add_breadcrumb, posthog, slack_app, alerts_channel, traceloopLogger, heliconeLogger, aispendLogger, berrispendLogger, supabaseClient, liteDebuggerClient, llmonitorLogger, promptLayerLogger, langFuseLogger, customLogger, weightsBiasesLogger, langsmithLogger, dynamoLogger, s3Logger
+    global sentry_sdk_instance, capture_exception, add_breadcrumb, posthog, slack_app, alerts_channel, traceloopLogger, athinaLogger, heliconeLogger, aispendLogger, berrispendLogger, supabaseClient, liteDebuggerClient, llmonitorLogger, promptLayerLogger, langFuseLogger, customLogger, weightsBiasesLogger, langsmithLogger, dynamoLogger, s3Logger
     try:
         for callback in callback_list:
             print_verbose(f"callback: {callback}")
@@ -5564,6 +5654,9 @@ def set_callbacks(callback_list, function_id=None):
                 print_verbose(f"Initialized Slack App: {slack_app}")
             elif callback == "traceloop":
                 traceloopLogger = TraceloopLogger()
+            elif callback == "athina":
+                athinaLogger = AthinaLogger()
+                print_verbose("Initialized Athina Logger")
             elif callback == "helicone":
                 heliconeLogger = HeliconeLogger()
             elif callback == "llmonitor":
@@ -5774,6 +5867,18 @@ async def convert_to_streaming_response_async(response_object: Optional[dict] = 
     choice_list = []
 
     for idx, choice in enumerate(response_object["choices"]):
+        if (
+            choice["message"].get("tool_calls", None) is not None
+            and isinstance(choice["message"]["tool_calls"], list)
+            and len(choice["message"]["tool_calls"]) > 0
+            and isinstance(choice["message"]["tool_calls"][0], dict)
+        ):
+            pydantic_tool_calls = []
+            for index, t in enumerate(choice["message"]["tool_calls"]):
+                if "index" not in t:
+                    t["index"] = index
+                pydantic_tool_calls.append(ChatCompletionDeltaToolCall(**t))
+            choice["message"]["tool_calls"] = pydantic_tool_calls
         delta = Delta(
             content=choice["message"].get("content", None),
             role=choice["message"]["role"],
@@ -8465,7 +8570,11 @@ class CustomStreamWrapper:
                     if hasattr(chunk, "candidates") == True:
                         try:
                             completion_obj["content"] = chunk.text
-                            if hasattr(chunk.candidates[0], "finish_reason"):
+                            if (
+                                hasattr(chunk.candidates[0], "finish_reason")
+                                and chunk.candidates[0].finish_reason.name
+                                != "FINISH_REASON_UNSPECIFIED"
+                            ):  # every non-final chunk in vertex ai has this
                                 model_response.choices[0].finish_reason = (
                                     map_finish_reason(
                                         chunk.candidates[0].finish_reason.name
@@ -8573,10 +8682,13 @@ class CustomStreamWrapper:
                     "text": chunk.choices[0].delta.content,
                     "is_finished": True,
                     "finish_reason": chunk.choices[0].finish_reason,
+                    "original_chunk": chunk,
                 }
 
                 completion_obj["content"] = response_obj["text"]
                 print_verbose(f"completion obj content: {completion_obj['content']}")
+                if hasattr(chunk, "id"):
+                    model_response.id = chunk.id
                 if response_obj["is_finished"]:
                     model_response.choices[0].finish_reason = response_obj[
                         "finish_reason"
@@ -8595,18 +8707,95 @@ class CustomStreamWrapper:
                     model_response.choices[0].finish_reason = response_obj[
                         "finish_reason"
                     ]
+                if response_obj.get("original_chunk", None) is not None:
+                    model_response.system_fingerprint = getattr(
+                        response_obj["original_chunk"], "system_fingerprint", None
+                    )
+                    if hasattr(response_obj["original_chunk"], "id"):
+                        model_response.id = response_obj["original_chunk"].id
                 if response_obj["logprobs"] is not None:
                     model_response.choices[0].logprobs = response_obj["logprobs"]
 
             model_response.model = self.model
             print_verbose(
-                f"model_response: {model_response}; completion_obj: {completion_obj}"
+                f"model_response finish reason 3: {model_response.choices[0].finish_reason}; response_obj={response_obj}"
             )
-            print_verbose(
-                f"model_response finish reason 3: {model_response.choices[0].finish_reason}"
-            )
+            ## FUNCTION CALL PARSING
             if (
-                len(completion_obj["content"]) > 0
+                response_obj is not None
+                and response_obj.get("original_chunk", None) is not None
+            ):  # function / tool calling branch - only set for openai/azure compatible endpoints
+                # enter this branch when no content has been passed in response
+                original_chunk = response_obj.get("original_chunk", None)
+                model_response.id = original_chunk.id
+                if len(original_chunk.choices) > 0:
+                    if (
+                        original_chunk.choices[0].delta.function_call is not None
+                        or original_chunk.choices[0].delta.tool_calls is not None
+                    ):
+                        try:
+                            delta = original_chunk.choices[0].delta
+                            model_response.system_fingerprint = (
+                                original_chunk.system_fingerprint
+                            )
+                            ## AZURE - check if arguments is not None
+                            if (
+                                original_chunk.choices[0].delta.function_call
+                                is not None
+                            ):
+                                if (
+                                    getattr(
+                                        original_chunk.choices[0].delta.function_call,
+                                        "arguments",
+                                    )
+                                    is None
+                                ):
+                                    original_chunk.choices[
+                                        0
+                                    ].delta.function_call.arguments = ""
+                            elif original_chunk.choices[0].delta.tool_calls is not None:
+                                if isinstance(
+                                    original_chunk.choices[0].delta.tool_calls, list
+                                ):
+                                    for t in original_chunk.choices[0].delta.tool_calls:
+                                        if hasattr(t, "functions") and hasattr(
+                                            t.functions, "arguments"
+                                        ):
+                                            if (
+                                                getattr(
+                                                    t.function,
+                                                    "arguments",
+                                                )
+                                                is None
+                                            ):
+                                                t.function.arguments = ""
+                            _json_delta = delta.model_dump()
+                            print_verbose(f"_json_delta: {_json_delta}")
+                            model_response.choices[0].delta = Delta(**_json_delta)
+                        except Exception as e:
+                            traceback.print_exc()
+                            model_response.choices[0].delta = Delta()
+                    else:
+                        try:
+                            delta = dict(original_chunk.choices[0].delta)
+                            print_verbose(f"original delta: {delta}")
+                            model_response.choices[0].delta = Delta(**delta)
+                            print_verbose(
+                                f"new delta: {model_response.choices[0].delta}"
+                            )
+                        except Exception as e:
+                            model_response.choices[0].delta = Delta()
+                else:
+                    return
+            print_verbose(
+                f"model_response.choices[0].delta: {model_response.choices[0].delta}; completion_obj: {completion_obj}"
+            )
+            print_verbose(f"self.sent_first_chunk: {self.sent_first_chunk}")
+            ## RETURN ARG
+            if (
+                "content" in completion_obj
+                and isinstance(completion_obj["content"], str)
+                and len(completion_obj["content"]) > 0
             ):  # cannot set content of an OpenAI Object to be an empty string
                 hold, model_response_str = self.check_special_tokens(
                     chunk=completion_obj["content"],
@@ -8658,7 +8847,7 @@ class CustomStreamWrapper:
                     return model_response
                 else:
                     return
-            elif model_response.choices[0].finish_reason:
+            elif model_response.choices[0].finish_reason is not None:
                 # flush any remaining holding chunk
                 if len(self.holding_chunk) > 0:
                     if model_response.choices[0].delta.content is None:
@@ -8668,61 +8857,15 @@ class CustomStreamWrapper:
                             self.holding_chunk + model_response.choices[0].delta.content
                         )
                     self.holding_chunk = ""
+                # get any function call arguments
                 model_response.choices[0].finish_reason = map_finish_reason(
                     model_response.choices[0].finish_reason
                 )  # ensure consistent output to openai
                 return model_response
             elif (
-                response_obj is not None
-                and response_obj.get("original_chunk", None) is not None
-            ):  # function / tool calling branch - only set for openai/azure compatible endpoints
-                # enter this branch when no content has been passed in response
-                original_chunk = response_obj.get("original_chunk", None)
-                model_response.id = original_chunk.id
-                if len(original_chunk.choices) > 0:
-                    if (
-                        original_chunk.choices[0].delta.function_call is not None
-                        or original_chunk.choices[0].delta.tool_calls is not None
-                    ):
-                        try:
-                            delta = dict(original_chunk.choices[0].delta)
-                            ## AZURE - check if arguments is not None
-                            if (
-                                original_chunk.choices[0].delta.function_call
-                                is not None
-                            ):
-                                if (
-                                    getattr(
-                                        original_chunk.choices[0].delta.function_call,
-                                        "arguments",
-                                    )
-                                    is None
-                                ):
-                                    original_chunk.choices[
-                                        0
-                                    ].delta.function_call.arguments = ""
-                            elif original_chunk.choices[0].delta.tool_calls is not None:
-                                if isinstance(
-                                    original_chunk.choices[0].delta.tool_calls, list
-                                ):
-                                    for t in original_chunk.choices[0].delta.tool_calls:
-                                        if (
-                                            getattr(
-                                                t.function,
-                                                "arguments",
-                                            )
-                                            is None
-                                        ):
-                                            t.function.arguments = ""
-                            model_response.choices[0].delta = Delta(**delta)
-                        except Exception as e:
-                            traceback.print_exc()
-                            model_response.choices[0].delta = Delta()
-                    else:
-                        return
-                else:
-                    return
-                model_response.system_fingerprint = original_chunk.system_fingerprint
+                model_response.choices[0].delta.tool_calls is not None
+                or model_response.choices[0].delta.function_call is not None
+            ):
                 if self.sent_first_chunk == False:
                     model_response.choices[0].delta["role"] = "assistant"
                     self.sent_first_chunk = True
@@ -8775,6 +8918,7 @@ class CustomStreamWrapper:
                     print_verbose(f"PROCESSED CHUNK PRE CHUNK CREATOR: {chunk}")
                     response: Optional[ModelResponse] = self.chunk_creator(chunk=chunk)
                     print_verbose(f"PROCESSED CHUNK POST CHUNK CREATOR: {response}")
+
                     if response is None:
                         continue
                     ## LOGGING
@@ -8819,7 +8963,11 @@ class CustomStreamWrapper:
                     print_verbose(f"value of async chunk: {chunk}")
                     if chunk == "None" or chunk is None:
                         raise Exception
-                    elif self.custom_llm_provider == "gemini" and len(chunk.parts) == 0:
+                    elif (
+                        self.custom_llm_provider == "gemini"
+                        and hasattr(chunk, "parts")
+                        and len(chunk.parts) == 0
+                    ):
                         continue
                     # chunk_creator() does logging/stream chunk building. We need to let it know its being called in_async_func, so we don't double add chunks.
                     # __anext__ also calls async_success_handler, which does logging
@@ -8848,6 +8996,7 @@ class CustomStreamWrapper:
                     self.rules.post_call_rules(
                         input=self.response_uptil_now, model=self.model
                     )
+                    print_verbose(f"final returned processed chunk: {processed_chunk}")
                     return processed_chunk
                 raise StopAsyncIteration
             else:  # temporary patch for non-aiohttp async calls

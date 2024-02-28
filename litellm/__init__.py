@@ -165,6 +165,7 @@ s3_callback_params: Optional[Dict] = None
 generic_logger_headers: Optional[Dict] = None
 default_key_generate_params: Optional[Dict] = None
 upperbound_key_generate_params: Optional[Dict] = None
+default_user_params: Optional[Dict] = None
 default_team_settings: Optional[List] = None
 max_user_budget: Optional[float] = None
 #### RELIABILITY ####
@@ -307,6 +308,7 @@ openai_compatible_endpoints: List = [
     "api.endpoints.anyscale.com/v1",
     "api.deepinfra.com/v1/openai",
     "api.mistral.ai/v1",
+    "api.groq.com/openai/v1",
     "api.together.xyz/v1",
 ]
 
@@ -314,6 +316,7 @@ openai_compatible_endpoints: List = [
 openai_compatible_providers: List = [
     "anyscale",
     "mistral",
+    "groq",
     "deepinfra",
     "perplexity",
     "xinference",
@@ -461,6 +464,7 @@ provider_list: List = [
     "perplexity",
     "anyscale",
     "mistral",
+    "groq",
     "maritalk",
     "voyage",
     "cloudflare",
