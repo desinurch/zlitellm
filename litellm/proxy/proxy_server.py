@@ -2329,7 +2329,9 @@ async def completion(
         except:
             data = json.loads(body_str)
 
-        data["user"] = data.get("user", user_api_key_dict.user_id)
+        # data["user"] = data.get("user", user_api_key_dict.user_id)
+        headers = request.headers
+        data["user"] = headers.get("X-Uid", "anonymous")
         data["model"] = (
             general_settings.get("completion_model", None)  # server default
             or user_model  # model name passed via cli args
@@ -2517,6 +2519,8 @@ async def chat_completion(
             # if users are using user_api_key_auth, set `user` in `data`
             data["user"] = user_api_key_dict.user_id
 
+        data["user"] = headers.get("X-Uid", "anonymous")
+
         if "metadata" not in data:
             data["metadata"] = {}
         data["metadata"]["user_api_key"] = user_api_key_dict.api_key
@@ -2560,13 +2564,6 @@ async def chat_completion(
             data["max_tokens"] = user_max_tokens
         if user_api_base:
             data["api_base"] = user_api_base
-
-        ## ADD USERID AS REQUIREMENT
-        if data["user_id"] is None:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail={"error": "No user_id passed"},
-            )
         
         ### CALL HOOKS ### - modify incoming data before calling the model
         data = await proxy_logging_obj.pre_call_hook(
