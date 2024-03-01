@@ -2409,7 +2409,14 @@ async def completion(
             import jwt
             decoded_token = jwt.decode(user_api_key_dict.api_key, options={"verify_signature": False})
             # get sub otherwise use anonymous
-            data["user"] = decoded_token.get("sub", "anonymous")
+            data_sub = decoded_token.get("sub", "anonymous")
+            if "-" in data_sub:
+                for key in decoded_token.keys():
+                    if "managed-id" in key:
+                        data["user"] = decoded_token.get(key)
+                        break
+            else:
+                data["user"] = data_sub
 
         data["model"] = (
             general_settings.get("completion_model", None)  # server default
@@ -2605,7 +2612,14 @@ async def chat_completion(
             import jwt
             decoded_token = jwt.decode(user_api_key_dict.api_key, options={"verify_signature": False})
             # get sub otherwise use anonymous
-            data["user"] = decoded_token.get("sub", "anonymous")
+            data_sub = decoded_token.get("sub", "anonymous")
+            if "-" in data_sub:
+                for key in decoded_token.keys():
+                    if "managed-id" in key:
+                        data["user"] = decoded_token.get(key)
+                        break
+            else:
+                data["user"] = data_sub
 
         if "metadata" not in data:
             data["metadata"] = {}
