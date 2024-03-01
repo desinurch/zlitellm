@@ -280,7 +280,7 @@ export const modelAvailableCall = async (
 
 export const keySpendLogsCall = async (accessToken: String, token: String) => {
   try {
-    const url = proxyBaseUrl ? `${proxyBaseUrl}/spend/logs` : `/spend/logs`;
+    const url = proxyBaseUrl ? `${proxyBaseUrl}/global/spend/logs` : `/global/spend/logs`;
     console.log("in keySpendLogsCall:", url);
     const response = await fetch(`${url}/?api_key=${token}`, {
       method: "GET",
@@ -313,6 +313,7 @@ export const userSpendLogsCall = async (
   endTime: String
 ) => {
   try {
+    console.log(`user role in spend logs call: ${userRole}`);
     let url = proxyBaseUrl ? `${proxyBaseUrl}/spend/logs` : `/spend/logs`;
     if (userRole == "App Owner") {
       url = `${url}/?user_id=${userID}&start_date=${startTime}&end_date=${endTime}`;
@@ -336,6 +337,126 @@ export const userSpendLogsCall = async (
     const data = await response.json();
     console.log(data);
     message.success("Spend Logs received");
+    return data;
+  } catch (error) {
+    console.error("Failed to create key:", error);
+    throw error;
+  }
+};
+
+export const adminSpendLogsCall = async (accessToken: String) => {
+  try {
+    let url = proxyBaseUrl
+      ? `${proxyBaseUrl}/global/spend/logs`
+      : `/global/spend/logs`;
+
+    message.info("Making spend logs request");
+    const response = await fetch(url, {
+      method: "GET",
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        "Content-Type": "application/json",
+      },
+    });
+    if (!response.ok) {
+      const errorData = await response.text();
+      message.error(errorData);
+      throw new Error("Network response was not ok");
+    }
+
+    const data = await response.json();
+    console.log(data);
+    message.success("Spend Logs received");
+    return data;
+  } catch (error) {
+    console.error("Failed to create key:", error);
+    throw error;
+  }
+};
+
+export const adminTopKeysCall = async (accessToken: String) => {
+  try {
+    let url = proxyBaseUrl
+      ? `${proxyBaseUrl}/global/spend/keys?limit=5`
+      : `/global/spend/keys?limit=5`;
+
+    message.info("Making spend keys request");
+    const response = await fetch(url, {
+      method: "GET",
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        "Content-Type": "application/json",
+      },
+    });
+    if (!response.ok) {
+      const errorData = await response.text();
+      message.error(errorData);
+      throw new Error("Network response was not ok");
+    }
+
+    const data = await response.json();
+    console.log(data);
+    message.success("Spend Logs received");
+    return data;
+  } catch (error) {
+    console.error("Failed to create key:", error);
+    throw error;
+  }
+};
+
+export const adminTopEndUsersCall = async (accessToken: String) => {
+  try {
+    let url = proxyBaseUrl
+      ? `${proxyBaseUrl}/global/spend/end_users`
+      : `/global/spend/end_users`;
+
+    message.info("Making top end users request");
+    const response = await fetch(url, {
+      method: "GET",
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        "Content-Type": "application/json",
+      },
+    });
+    if (!response.ok) {
+      const errorData = await response.text();
+      message.error(errorData);
+      throw new Error("Network response was not ok");
+    }
+
+    const data = await response.json();
+    console.log(data);
+    message.success("Top End users received");
+    return data;
+  } catch (error) {
+    console.error("Failed to create key:", error);
+    throw error;
+  }
+};
+
+export const adminTopModelsCall = async (accessToken: String) => {
+  try {
+    let url = proxyBaseUrl
+      ? `${proxyBaseUrl}/global/spend/models?limit=5`
+      : `/global/spend/models?limit=5`;
+
+    message.info("Making top models request");
+    const response = await fetch(url, {
+      method: "GET",
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        "Content-Type": "application/json",
+      },
+    });
+    if (!response.ok) {
+      const errorData = await response.text();
+      message.error(errorData);
+      throw new Error("Network response was not ok");
+    }
+
+    const data = await response.json();
+    console.log(data);
+    message.success("Top Models received");
     return data;
   } catch (error) {
     console.error("Failed to create key:", error);
@@ -468,6 +589,46 @@ export const userGetRequesedtModelsCall = async (accessToken: String) => {
   }
 };
 
+export interface User {
+  user_role: string;
+  user_id: string;
+  user_email: string;
+  [key: string]: string; // Include any other potential keys in the dictionary
+}
+
+export const userGetAllUsersCall = async (
+  accessToken: String,
+  role: String
+) => {
+  try {
+    const url = proxyBaseUrl
+      ? `${proxyBaseUrl}/user/get_users?role=${role}`
+      : `/user/get_users?role=${role}`;
+    console.log("in userGetAllUsersCall:", url);
+    const response = await fetch(url, {
+      method: "GET",
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        "Content-Type": "application/json",
+      },
+    });
+
+    if (!response.ok) {
+      const errorData = await response.text();
+      message.error("Failed to delete key: " + errorData);
+      throw new Error("Network response was not ok");
+    }
+    const data = await response.json();
+    console.log(data);
+    message.success("Got all users");
+    return data;
+    // Handle success - you might want to update some state or UI based on the created key
+  } catch (error) {
+    console.error("Failed to get requested models:", error);
+    throw error;
+  }
+};
+
 export const teamCreateCall = async (
   accessToken: string,
   formValues: Record<string, any> // Assuming formValues is an object
@@ -542,6 +703,44 @@ export const teamMemberAddCall = async (
 
     const data = await response.json();
     console.log("API Response:", data);
+    return data;
+    // Handle success - you might want to update some state or UI based on the created key
+  } catch (error) {
+    console.error("Failed to create key:", error);
+    throw error;
+  }
+};
+
+export const userUpdateUserCall = async (
+  accessToken: string,
+  formValues: any // Assuming formValues is an object
+) => {
+  try {
+    console.log("Form Values in userUpdateUserCall:", formValues); // Log the form values before making the API call
+
+    const url = proxyBaseUrl ? `${proxyBaseUrl}/user/update` : `/user/update`;
+    const response = await fetch(url, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        user_role: "proxy_admin_viewer",
+        ...formValues, // Include formValues in the request body
+      }),
+    });
+
+    if (!response.ok) {
+      const errorData = await response.text();
+      message.error("Failed to create key: " + errorData);
+      console.error("Error response from the server:", errorData);
+      throw new Error("Network response was not ok");
+    }
+
+    const data = await response.json();
+    console.log("API Response:", data);
+    message.success("User role updated");
     return data;
     // Handle success - you might want to update some state or UI based on the created key
   } catch (error) {

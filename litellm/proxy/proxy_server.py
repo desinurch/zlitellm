@@ -783,6 +783,9 @@ async def user_api_key_auth(
                 "/v2/key/info",
                 "/models",
                 "/v1/models",
+                "/global/spend/logs",
+                "/global/spend/keys",
+                "/global/spend/models",
             ]
             # check if the current route startswith any of the allowed routes
             if (
@@ -941,8 +944,7 @@ async def _PROXY_track_cost_callback(
                 raise Exception("User API key missing from custom callback.")
         else:
             if kwargs["stream"] != True or (
-                kwargs["stream"] == True
-                and kwargs.get("complete_streaming_response") in kwargs
+                kwargs["stream"] == True and "complete_streaming_response" in kwargs
             ):
                 raise Exception(
                     f"Model not in litellm model cost map. Add custom pricing - https://docs.litellm.ai/docs/proxy/custom_pricing"
@@ -1150,9 +1152,9 @@ async def update_database(
                 payload["spend"] = response_cost
                 if prisma_client is not None:
                     await prisma_client.insert_data(data=payload, table_name="spend")
-
                 elif custom_db_client is not None:
                     await custom_db_client.insert_data(payload, table_name="spend")
+
             except Exception as e:
                 verbose_proxy_logger.info(f"Update Spend Logs DB failed to execute")
 
@@ -2315,7 +2317,6 @@ async def startup_event():
     ### CHECK IF VIEW EXISTS ###
     if prisma_client is not None:
         create_view_response = await prisma_client.check_view_exists()
-        print(f"create_view_response: {create_view_response}")  # noqa
 
     ### START BUDGET SCHEDULER ###
     if prisma_client is not None:
@@ -2422,6 +2423,9 @@ async def completion(
             data["metadata"] = {}
         data["metadata"]["user_api_key"] = user_api_key_dict.api_key
         data["metadata"]["user_api_key_metadata"] = user_api_key_dict.metadata
+        data["metadata"]["user_api_key_alias"] = getattr(
+            user_api_key_dict, "key_alias", None
+        )
         data["metadata"]["user_api_key_user_id"] = user_api_key_dict.user_id
         data["metadata"]["user_api_key_team_id"] = getattr(
             user_api_key_dict, "team_id", None
@@ -2606,6 +2610,9 @@ async def chat_completion(
         if "metadata" not in data:
             data["metadata"] = {}
         data["metadata"]["user_api_key"] = user_api_key_dict.api_key
+        data["metadata"]["user_api_key_alias"] = getattr(
+            user_api_key_dict, "key_alias", None
+        )
         data["metadata"]["user_api_key_user_id"] = user_api_key_dict.user_id
         data["metadata"]["user_api_key_team_id"] = getattr(
             user_api_key_dict, "team_id", None
@@ -2839,6 +2846,9 @@ async def embeddings(
             "authorization", None
         )  # do not store the original `sk-..` api key in the db
         data["metadata"]["headers"] = _headers
+        data["metadata"]["user_api_key_alias"] = getattr(
+            user_api_key_dict, "key_alias", None
+        )
         data["metadata"]["user_api_key_user_id"] = user_api_key_dict.user_id
         data["metadata"]["user_api_key_team_id"] = getattr(
             user_api_key_dict, "team_id", None
@@ -3013,6 +3023,9 @@ async def image_generation(
             "authorization", None
         )  # do not store the original `sk-..` api key in the db
         data["metadata"]["headers"] = _headers
+        data["metadata"]["user_api_key_alias"] = getattr(
+            user_api_key_dict, "key_alias", None
+        )
         data["metadata"]["user_api_key_user_id"] = user_api_key_dict.user_id
         data["metadata"]["user_api_key_team_id"] = getattr(
             user_api_key_dict, "team_id", None
@@ -3171,6 +3184,9 @@ async def moderations(
             "authorization", None
         )  # do not store the original `sk-..` api key in the db
         data["metadata"]["headers"] = _headers
+        data["metadata"]["user_api_key_alias"] = getattr(
+            user_api_key_dict, "key_alias", None
+        )
         data["metadata"]["user_api_key_user_id"] = user_api_key_dict.user_id
         data["metadata"]["user_api_key_team_id"] = getattr(
             user_api_key_dict, "team_id", None
@@ -3815,7 +3831,7 @@ async def view_spend_tags(
 
 @router.get(
     "/spend/logs",
-    tags=["budget & spend Tracking"],
+    tags=["Budget & Spend Tracking"],
     dependencies=[Depends(user_api_key_auth)],
     responses={
         200: {"model": List[LiteLLM_SpendLogs]},
@@ -4076,6 +4092,132 @@ async def view_spend_logs(
 
 
 @router.get(
+    "/global/spend/logs",
+    tags=["Budget & Spend Tracking"],
+    dependencies=[Depends(user_api_key_auth)],
+)
+async def global_spend_logs(
+    api_key: str = fastapi.Query(
+        default=None,
+        description="API Key to get global spend (spend per day for last 30d). Admin-only endpoint",
+    )
+):
+    """
+    [BETA] This is a beta endpoint. It will change.
+
+    Use this to get global spend (spend per day for last 30d). Admin-only endpoint
+
+    More efficient implementation of /spend/logs, by creating a view over the spend logs table.
+    """
+    global prisma_client
+    if prisma_client is None:
+        raise ProxyException(
+            message="Prisma Client is not initialized",
+            type="internal_error",
+            param="None",
+            code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+        )
+    if api_key is None:
+        sql_query = """SELECT * FROM "MonthlyGlobalSpend";"""
+
+        response = await prisma_client.db.query_raw(query=sql_query)
+
+        return response
+    else:
+        sql_query = (
+            """
+            SELECT * FROM "MonthlyGlobalSpendPerKey"
+            WHERE "api_key" = '"""
+            + api_key
+            + """'
+            ORDER BY "date";
+        """
+        )
+
+        response = await prisma_client.db.query_raw(query=sql_query)
+
+        return response
+    return
+
+
+@router.get(
+    "/global/spend/keys",
+    tags=["Budget & Spend Tracking"],
+    dependencies=[Depends(user_api_key_auth)],
+)
+async def global_spend_keys(
+    limit: int = fastapi.Query(
+        default=None,
+        description="Number of keys to get. Will return Top 'n' keys.",
+    )
+):
+    """
+    [BETA] This is a beta endpoint. It will change.
+
+    Use this to get the top 'n' keys with the highest spend, ordered by spend.
+    """
+    global prisma_client
+
+    if prisma_client is None:
+        raise HTTPException(status_code=500, detail={"error": "No db connected"})
+    sql_query = f"""SELECT * FROM "Last30dKeysBySpend" LIMIT {limit};"""
+
+    response = await prisma_client.db.query_raw(query=sql_query)
+
+    return response
+
+
+@router.get(
+    "/global/spend/end_users",
+    tags=["Budget & Spend Tracking"],
+    dependencies=[Depends(user_api_key_auth)],
+)
+async def global_spend_end_users():
+    """
+    [BETA] This is a beta endpoint. It will change.
+
+    Use this to get the top 'n' keys with the highest spend, ordered by spend.
+    """
+    global prisma_client
+
+    if prisma_client is None:
+        raise HTTPException(status_code=500, detail={"error": "No db connected"})
+    sql_query = f"""SELECT * FROM "Last30dTopEndUsersSpend";"""
+
+    response = await prisma_client.db.query_raw(query=sql_query)
+
+    return response
+
+
+@router.get(
+    "/global/spend/models",
+    tags=["Budget & Spend Tracking"],
+    dependencies=[Depends(user_api_key_auth)],
+)
+async def global_spend_models(
+    limit: int = fastapi.Query(
+        default=None,
+        description="Number of models to get. Will return Top 'n' models.",
+    )
+):
+    """
+    [BETA] This is a beta endpoint. It will change.
+
+    Use this to get the top 'n' keys with the highest spend, ordered by spend.
+    """
+    global prisma_client
+
+    if prisma_client is None:
+        raise HTTPException(status_code=500, detail={"error": "No db connected"})
+
+    sql_query = f"""SELECT * FROM "Last30dModelsBySpend" LIMIT {limit};"""
+
+    response = await prisma_client.db.query_raw(query=sql_query)
+
+    return response
+
+
+@router.get(
     "/daily_metrics",
     summary="Get daily spend metrics",
     tags=["budget & spend Tracking"],
@@ -4091,7 +4233,11 @@ async def view_daily_metrics(
         description="Time till which to view key spend",
     ),
 ):
-    """ """
+    """
+    [BETA] This is a beta endpoint. It might change without notice.
+
+    Please give feedback - https://github.com/BerriAI/litellm/issues
+    """
     try:
         if os.getenv("CLICKHOUSE_HOST") is not None:
             # gettting spend logs from clickhouse
@@ -4259,6 +4405,14 @@ async def user_info(
         default=False,
         description="set to true to View all users. When using view_all, don't pass user_id",
     ),
+    page: Optional[int] = fastapi.Query(
+        default=0,
+        description="Page number for pagination. Only use when view_all is true",
+    ),
+    page_size: Optional[int] = fastapi.Query(
+        default=25,
+        description="Number of items per page. Only use when view_all is true",
+    ),
     user_api_key_dict: UserAPIKeyAuth = Depends(user_api_key_auth),
 ):
     """
@@ -4280,8 +4434,14 @@ async def user_info(
         if user_id is not None:
             user_info = await prisma_client.get_data(user_id=user_id)
         elif view_all == True:
+            if page is None:
+                page = 0
+            if page_size is None:
+                page_size = 25
+            offset = (page) * page_size  # default is 0
+            limit = page_size  # default is 10
             user_info = await prisma_client.get_data(
-                table_name="user", query_type="find_all"
+                table_name="user", query_type="find_all", offset=offset, limit=limit
             )
             return user_info
         else:
@@ -4401,12 +4561,43 @@ async def user_update(data: UpdateUserRequest):
             ):  # models default to [], spend defaults to 0, we should not reset these values
                 non_default_values[k] = v
 
-        response = await prisma_client.update_data(
-            user_id=data_json["user_id"],
-            data=non_default_values,
-            update_key_values=non_default_values,
-        )
-        return {"user_id": data_json["user_id"], **non_default_values}
+        ## ADD USER, IF NEW ##
+        verbose_proxy_logger.debug(f"/user/update: Received data = {data}")
+        if data.user_id is not None and len(data.user_id) > 0:
+            non_default_values["user_id"] = data.user_id  # type: ignore
+            verbose_proxy_logger.debug(f"In update user, user_id condition block.")
+            response = await prisma_client.update_data(
+                user_id=data.user_id,
+                data=non_default_values,
+                table_name="user",
+            )
+            verbose_proxy_logger.debug(
+                f"received response from updating prisma client. response={response}"
+            )
+        elif data.user_email is not None:
+            non_default_values["user_id"] = str(uuid.uuid4())
+            non_default_values["user_email"] = data.user_email
+            ## user email is not unique acc. to prisma schema -> future improvement
+            ### for now: check if it exists in db, if not - insert it
+            existing_user_rows = await prisma_client.get_data(
+                key_val={"user_email": data.user_email},
+                table_name="user",
+                query_type="find_all",
+            )
+            if existing_user_rows is None or (
+                isinstance(existing_user_rows, list) and len(existing_user_rows) == 0
+            ):
+                response = await prisma_client.insert_data(
+                    data=non_default_values, table_name="user"
+                )
+            elif isinstance(existing_user_rows, list) and len(existing_user_rows) > 0:
+                for existing_user in existing_user_rows:
+                    response = await prisma_client.update_data(
+                        user_id=existing_user.user_id,
+                        data=non_default_values,
+                        table_name="user",
+                    )
+        return response
         # update based on remaining passed in values
     except Exception as e:
         traceback.print_exc()
@@ -4609,6 +4800,40 @@ async def unblock_user(data: BlockUsers):
     return {"blocked_users": litellm.blocked_user_list}
 
 
+@router.get(
+    "/user/get_users",
+    tags=["user management"],
+    dependencies=[Depends(user_api_key_auth)],
+)
+async def get_users(
+    role: str = fastapi.Query(
+        default=None,
+        description="Either 'proxy_admin', 'proxy_viewer', 'app_owner', 'app_user'",
+    )
+):
+    """
+    [BETA] This could change without notice. Give feedback - https://github.com/BerriAI/litellm/issues
+
+    Get all users who are a specific `user_role`.
+
+    Used by the UI to populate the user lists.
+
+    Currently - admin-only endpoint.
+    """
+    global prisma_client
+
+    if prisma_client is None:
+        raise HTTPException(
+            status_code=500,
+            detail={"error": f"No db connected. prisma client={prisma_client}"},
+        )
+    all_users = await prisma_client.get_data(
+        table_name="user", query_type="find_all", key_val={"user_role": role}
+    )
+
+    return all_users
+
+
 #### TEAM MANAGEMENT ####
 
 
@@ -4758,9 +4983,9 @@ async def update_team(
 ):
     """
     [BETA]
-    [DEPRECATED] - use the `/team/member_add` and `/team/member_remove` endpoints instead 
+    [RECOMMENDED] - use `/team/member_add` to add new team members instead 
 
-    You can now add / delete users from a team via /team/update
+    You can now update team budget / rate limits via /team/update
 
     ```
     curl --location 'http://0.0.0.0:8000/team/update' \
@@ -5428,6 +5653,9 @@ async def async_queue_request(
             "authorization", None
         )  # do not store the original `sk-..` api key in the db
         data["metadata"]["headers"] = _headers
+        data["metadata"]["user_api_key_alias"] = getattr(
+            user_api_key_dict, "key_alias", None
+        )
         data["metadata"]["user_api_key_user_id"] = user_api_key_dict.user_id
         data["metadata"]["user_api_key_team_id"] = getattr(
             user_api_key_dict, "team_id", None
@@ -5948,6 +6176,7 @@ async def auth_callback(request: Request):
         "user_email": user_email,
     }
     try:
+        user_role = None
         if prisma_client is not None:
             user_info = await prisma_client.get_data(user_id=user_id, table_name="user")
             verbose_proxy_logger.debug(
@@ -5959,6 +6188,7 @@ async def auth_callback(request: Request):
                     "user_id": getattr(user_info, "user_id", user_id),
                     "user_email": getattr(user_info, "user_id", user_email),
                 }
+                user_role = getattr(user_info, "user_role", None)
             elif litellm.default_user_params is not None and isinstance(
                 litellm.default_user_params, dict
             ):
@@ -5981,7 +6211,7 @@ async def auth_callback(request: Request):
     key = response["token"]  # type: ignore
     user_id = response["user_id"]  # type: ignore
     litellm_dashboard_ui = "/ui/"
-    user_role = "app_owner"
+    user_role = user_role or "app_owner"
     if (
         os.getenv("PROXY_ADMIN_ID", None) is not None
         and os.environ["PROXY_ADMIN_ID"] == user_id
