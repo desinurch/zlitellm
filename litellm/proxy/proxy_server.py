@@ -2397,7 +2397,19 @@ async def completion(
 
         # data["user"] = data.get("user", user_api_key_dict.user_id)
         headers = request.headers
-        data["user"] = headers.get("X-Uid", "anonymous")
+        # HTTP 1.1 headers are case-insensitive
+        if headers.get("X-Uid"):
+            data["user"] = headers.get("X-Uid")
+        # HTTP 2.0 headers are case-sensitive
+        if headers.get("x-uid"):
+            data["user"] = headers.get("x-uid")
+        # Non-identifiable, get from jwt
+        if data.get("user") is None:
+            import jwt
+            decoded_token = jwt.decode(user_api_key_dict.api_key, options={"verify_signature": False})
+            # get sub otherwise use anonymous
+            data["user"] = decoded_token.get("sub", "anonymous")
+
         data["model"] = (
             general_settings.get("completion_model", None)  # server default
             or user_model  # model name passed via cli args
@@ -2578,7 +2590,18 @@ async def chat_completion(
         #     # if users are using user_api_key_auth, set `user` in `data`
         #     data["user"] = user_api_key_dict.user_id
 
-        data["user"] = headers.get("X-Uid", "anonymous")
+        # HTTP 1.1 headers are case-insensitive
+        if headers.get("X-Uid"):
+            data["user"] = headers.get("X-Uid")
+        # HTTP 2.0 headers are case-sensitive
+        if headers.get("x-uid"):
+            data["user"] = headers.get("x-uid")
+        # Non-identifiable, get from jwt
+        if data.get("user") is None:
+            import jwt
+            decoded_token = jwt.decode(user_api_key_dict.api_key, options={"verify_signature": False})
+            # get sub otherwise use anonymous
+            data["user"] = decoded_token.get("sub", "anonymous")
 
         if "metadata" not in data:
             data["metadata"] = {}
