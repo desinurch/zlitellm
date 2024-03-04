@@ -280,7 +280,9 @@ export const modelAvailableCall = async (
 
 export const keySpendLogsCall = async (accessToken: String, token: String) => {
   try {
-    const url = proxyBaseUrl ? `${proxyBaseUrl}/global/spend/logs` : `/global/spend/logs`;
+    const url = proxyBaseUrl
+      ? `${proxyBaseUrl}/global/spend/logs`
+      : `/global/spend/logs`;
     console.log("in keySpendLogsCall:", url);
     const response = await fetch(`${url}/?api_key=${token}`, {
       method: "GET",
@@ -404,20 +406,42 @@ export const adminTopKeysCall = async (accessToken: String) => {
   }
 };
 
-export const adminTopEndUsersCall = async (accessToken: String) => {
+export const adminTopEndUsersCall = async (
+  accessToken: String,
+  keyToken: String | null
+) => {
   try {
     let url = proxyBaseUrl
       ? `${proxyBaseUrl}/global/spend/end_users`
       : `/global/spend/end_users`;
 
+    let body = "";
+    if (keyToken) {
+      body = JSON.stringify({ api_key: keyToken });
+    }
     message.info("Making top end users request");
-    const response = await fetch(url, {
-      method: "GET",
+
+    // Define requestOptions with body as an optional property
+    const requestOptions: {
+      method: string;
+      headers: {
+        Authorization: string;
+        "Content-Type": string;
+      };
+      body?: string; // The body is optional and might not be present
+    } = {
+      method: "POST",
       headers: {
         Authorization: `Bearer ${accessToken}`,
         "Content-Type": "application/json",
       },
-    });
+    };
+
+    if (keyToken) {
+      requestOptions.body = JSON.stringify({ api_key: keyToken });
+    }
+
+    const response = await fetch(url, requestOptions);
     if (!response.ok) {
       const errorData = await response.text();
       message.error(errorData);
@@ -748,3 +772,79 @@ export const userUpdateUserCall = async (
     throw error;
   }
 };
+
+export const PredictedSpendLogsCall = async (
+  accessToken: string,
+  requestData: any
+) => {
+  try {
+    let url = proxyBaseUrl
+      ? `${proxyBaseUrl}/global/predict/spend/logs`
+      : `/global/predict/spend/logs`;
+
+    //message.info("Predicting spend logs request");
+
+    const response = await fetch(url, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        data: requestData,
+      }),
+    });
+
+    if (!response.ok) {
+      const errorData = await response.text();
+      message.error(errorData);
+      throw new Error("Network response was not ok");
+    }
+
+    const data = await response.json();
+    console.log(data);
+    //message.success("Predicted Logs received");
+    return data;
+  } catch (error) {
+    console.error("Failed to create key:", error);
+    throw error;
+  }
+};
+
+export const slackBudgetAlertsHealthCheck = async (accessToken: String) => {
+  try {
+    let url = proxyBaseUrl
+      ? `${proxyBaseUrl}/health/services?service=slack_budget_alerts`
+      : `/health/services?service=slack_budget_alerts`;
+
+    console.log("Checking Slack Budget Alerts service health");
+    message.info("Sending Test Slack alert...");
+
+    const response = await fetch(url, {
+      method: "GET",
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        "Content-Type": "application/json",
+      },
+    });
+
+    if (!response.ok) {
+      const errorData = await response.text();
+      message.error("Failed Slack Alert test: " + errorData);
+      // throw error with message
+      throw new Error(errorData);
+    }
+    
+    const data = await response.json();
+    message.success("Test Slack Alert worked - check your Slack!");
+    console.log("Service Health Response:", data);
+
+    // You can add additional logic here based on the response if needed
+
+    return data;
+  } catch (error) {
+    console.error("Failed to perform health check:", error);
+    throw error;
+  }
+};
+

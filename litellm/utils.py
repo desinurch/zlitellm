@@ -4881,7 +4881,7 @@ def get_optional_params(
             extra_body  # openai client supports `extra_body` param
         )
     else:  # assume passing in params for openai/azure openai
-        print_verbose(f"UNMAPPED PROVIDER, ASSUMING IT'S OPENAI/AZUREs")
+        print_verbose(f"UNMAPPED PROVIDER, ASSUMING IT'S OPENAI/AZURE")
         supported_params = [
             "functions",
             "function_call",
@@ -5512,7 +5512,7 @@ def validate_environment(model: Optional[str] = None) -> dict:
         }
     ## EXTRACT LLM PROVIDER - if model name provided
     try:
-        custom_llm_provider = get_llm_provider(model=model)
+        _, custom_llm_provider, _, _ = get_llm_provider(model=model)
     except:
         custom_llm_provider = None
     # # check if llm provider part of model name
@@ -5602,11 +5602,16 @@ def validate_environment(model: Optional[str] = None) -> dict:
             else:
                 missing_keys.append("AWS_ACCESS_KEY_ID")
                 missing_keys.append("AWS_SECRET_ACCESS_KEY")
+        elif custom_llm_provider in ["ollama", "ollama_chat"]:
+            if "OLLAMA_API_BASE" in os.environ:
+                keys_in_environment = True
+            else:
+                missing_keys.append("OLLAMA_API_BASE")
     else:
         ## openai - chatcompletion + text completion
         if (
             model in litellm.open_ai_chat_completion_models
-            or litellm.open_ai_text_completion_models
+            or model in litellm.open_ai_text_completion_models
         ):
             if "OPENAI_API_KEY" in os.environ:
                 keys_in_environment = True
@@ -6570,6 +6575,17 @@ def exception_type(
                         llm_provider=custom_llm_provider,
                         model=model,
                         response=original_exception.response,
+                    )
+                elif "Mistral API raised a streaming error" in error_str:
+                    exception_mapping_worked = True
+                    _request = httpx.Request(
+                        method="POST", url="https://api.openai.com/v1"
+                    )
+                    raise APIError(
+                        message=f"{exception_provider} - {message}",
+                        llm_provider=custom_llm_provider,
+                        model=model,
+                        response=httpx.Response(status_code=500, request=_request),
                     )
                 elif hasattr(original_exception, "status_code"):
                     exception_mapping_worked = True
@@ -8787,6 +8803,10 @@ class CustomStreamWrapper:
                 completion_obj["content"] = response_obj["text"]
                 print_verbose(f"completion obj content: {completion_obj['content']}")
                 if response_obj["is_finished"]:
+                    if response_obj["finish_reason"] == "error":
+                        raise Exception(
+                            "Mistral API raised a streaming error - finish_reason: error, no content string given."
+                        )
                     model_response.choices[0].finish_reason = response_obj[
                         "finish_reason"
                     ]
