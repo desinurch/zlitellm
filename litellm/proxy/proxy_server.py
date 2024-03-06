@@ -2485,6 +2485,8 @@ async def completion(
                     if "managed-id" in key:
                         data["user"] = decoded_token.get(key)
                         break
+                    else:
+                        data["user"] = data_sub
             else:
                 data["user"] = data_sub
 
@@ -2680,6 +2682,8 @@ async def chat_completion(
                     if "managed-id" in key:
                         data["user"] = decoded_token.get(key)
                         break
+                    else:
+                        data["user"] = data_sub
             else:
                 data["user"] = data_sub
 
